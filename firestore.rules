@@ -1,0 +1,79 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function boardData(boardId) {
+      return get(/databases/$(database)/documents/boards/$(boardId)).data;
+    }
+
+    function isMember(boardId) {
+      return signedIn() && request.auth.uid in boardData(boardId).memberIds;
+    }
+
+    function roleIn(boardId) {
+      return boardData(boardId).members[request.auth.uid].role;
+    }
+
+    // owner, admin and member can create, claim, assign, finish and edit tasks
+    function canWork(boardId) {
+      return isMember(boardId) && roleIn(boardId) in ['owner', 'admin', 'member'];
+    }
+
+    function canManage(boardId) {
+      return isMember(boardId) && roleIn(boardId) in ['owner', 'admin'];
+    }
+
+    // Profiles. Any signed-in user can read them: that is how a board owner
+    // finds a teammate by email. Only you can write your own.
+    match /users/{uid} {
+      allow read: if signedIn();
+      allow create, update: if signedIn() && request.auth.uid == uid
+                            && request.resource.data.uid == uid;
+      allow delete: if false;
+    }
+
+    match /boards/{boardId} {
+      allow read: if signedIn() && request.auth.uid in resource.data.memberIds;
+
+      // The creator is always the owner, and the only member to start with.
+      allow create: if signedIn()
+                    && request.resource.data.ownerId == request.auth.uid
+                    && request.resource.data.memberIds == [request.auth.uid]
+                    && request.resource.data.members[request.auth.uid].role == 'owner';
+
+      // Owner and admins can rename, edit categories and manage members.
+      // The owner can never be removed or demoted.
+      allow update: if signedIn()
+                    && request.auth.uid in resource.data.memberIds
+                    && resource.data.members[request.auth.uid].role in ['owner', 'admin']
+                    && request.resource.data.ownerId == resource.data.ownerId
+                    && request.resource.data.members[resource.data.ownerId].role == 'owner'
+                    && request.resource.data.members.keys().toSet() == request.resource.data.memberIds.toSet();
+
+      allow delete: if signedIn() && resource.data.ownerId == request.auth.uid;
+
+      match /tasks/{taskId} {
+        allow read: if isMember(boardId);
+
+        allow create: if canWork(boardId)
+                      && request.resource.data.creatorId == request.auth.uid
+                      && (request.resource.data.workerId == null
+                          || request.resource.data.workerId in boardData(boardId).memberIds);
+
+        allow update: if canWork(boardId)
+                      && request.resource.data.creatorId == resource.data.creatorId
+                      && request.resource.data.createdAt == resource.data.createdAt
+                      && (request.resource.data.workerId == null
+                          || request.resource.data.workerId in boardData(boardId).memberIds);
+
+        allow delete: if canManage(boardId)
+                      || (canWork(boardId) && resource.data.creatorId == request.auth.uid);
+      }
+    }
+  }
+}
