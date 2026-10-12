@@ -28,6 +28,12 @@ service cloud.firestore {
       return isMember(boardId) && roleIn(boardId) in ['owner', 'admin'];
     }
 
+    // media is optional: null, or {url, path, type, name, size} for a photo or video in Storage
+    function mediaOk(data) {
+      return !('media' in data) || data.media == null
+          || (data.media.type in ['image', 'video'] && data.media.path is string && data.media.url is string);
+    }
+
     // Profiles. Any signed-in user can read them: that is how a board owner
     // finds a teammate by email. Only you can write your own.
     match /users/{uid} {
@@ -61,11 +67,13 @@ service cloud.firestore {
         allow read: if isMember(boardId);
 
         allow create: if canWork(boardId)
+                      && mediaOk(request.resource.data)
                       && request.resource.data.creatorId == request.auth.uid
                       && (request.resource.data.workerId == null
                           || request.resource.data.workerId in boardData(boardId).memberIds);
 
         allow update: if canWork(boardId)
+                      && mediaOk(request.resource.data)
                       && request.resource.data.creatorId == resource.data.creatorId
                       && request.resource.data.createdAt == resource.data.createdAt
                       && (request.resource.data.workerId == null

@@ -13,12 +13,17 @@ import {
     getFirestore, collection, doc, query, where, onSnapshot, addDoc, setDoc, updateDoc, deleteDoc,
     getDocs, writeBatch, serverTimestamp, arrayUnion, arrayRemove, deleteField,
 } from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore.js';
+import {
+    getStorage, ref as storageRef, uploadBytesResumable, getDownloadURL, deleteObject,
+} from 'https://www.gstatic.com/firebasejs/10.14.1/firebase-storage.js';
 import { firebaseConfig } from './firebase-config.js';
-import { defaultCategories } from './model.js';
+import { defaultCategories, newId } from './model.js';
+import { kindOf } from './media.js';
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
+const storage = getStorage(app);
 
 const ms = (v) => (v && v.toMillis ? v.toMillis() : typeof v === 'number' ? v : null);
 const read = (snap) => ({ id: snap.id, ...snap.data({ serverTimestamps: 'estimate' }) });
@@ -84,6 +89,8 @@ export const renameBoard = (id, title) => updateDoc(doc(db, 'boards', id), { tit
 
 export async function deleteBoard(id) {
     const tasks = await getDocs(collection(db, 'boards', id, 'tasks'));
+    // files first: the storage rules look the board up to check membership
+    await Promise.all(tasks.docs.map((d) => d.data().media && deleteMedia(d.data().media.path).catch(() => {})));
     for (let i = 0; i < tasks.docs.length; i += 400) {
         const batch = writeBatch(db);
         tasks.docs.slice(i, i + 400).forEach((d) => batch.delete(d.ref));
@@ -135,6 +142,7 @@ export const createTask = (boardId, user, data) => addDoc(collection(db, 'boards
     creatorName: user.name,
     creatorPhoto: user.photoURL || '',
     workerId: data.workerId || null,
+    media: data.media || null,
     finished: false,
     createdAt: serverTimestamp(),
 });
@@ -146,3 +154,20 @@ export function updateTask(boardId, taskId, patch) {
 }
 
 export const deleteTask = (boardId, taskId) => deleteDoc(doc(db, 'boards', boardId, 'tasks', taskId));
+
+// ---------- Media (optional photo or video on a task) ----------
+
+// Resolves to the object stored on the task as `media`. onProgress gets 0-100.
+export function uploadMedia(boardId, file, onProgress) {
+    const safeName = file.name.replace(/[^\w.-]+/g, '_').slice(-60);
+    const path = `boards/${boardId}/media/${newId()}-${safeName}`;
+    const task = uploadBytesResumable(storageRef(storage, path), file, { contentType: file.type });
+    return new Promise((resolve, reject) => {
+        task.on('state_changed',
+            (s) => onProgress && onProgress(Math.round((s.bytesTransferred / s.totalBytes) * 100)),
+            reject,
+            async () => resolve({ url: await getDownloadURL(task.snapshot.ref), path, type: kindOf(file), name: file.name, size: file.size }));
+    });
+}
+
+export const deleteMedia = (path) => deleteObject(storageRef(storage, path));

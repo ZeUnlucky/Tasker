@@ -1,0 +1,31 @@
+rules_version = '2';
+
+// Optional photo/video attached to a task. Files live under boards/{boardId}/media/.
+// Membership is read from the board document in Firestore, so these rules follow the board's roles.
+// Keep the size caps in sync with LIMITS in js/media.js.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /boards/{boardId}/media/{file} {
+
+      function board() {
+        return firestore.get(/databases/(default)/documents/boards/$(boardId)).data;
+      }
+
+      function canWork() {
+        return request.auth != null
+            && request.auth.uid in board().memberIds
+            && board().members[request.auth.uid].role in ['owner', 'admin', 'member'];
+      }
+
+      allow read: if request.auth != null && request.auth.uid in board().memberIds;
+
+      allow create: if canWork()
+                    && request.resource.contentType.matches('(image|video)/.*')
+                    && ((request.resource.contentType.matches('image/.*') && request.resource.size < 10 * 1024 * 1024)
+                        || (request.resource.contentType.matches('video/.*') && request.resource.size < 50 * 1024 * 1024));
+
+      // no overwrite: a replaced file is a new upload plus a delete
+      allow delete: if canWork();
+    }
+  }
+}
