@@ -28,10 +28,10 @@ service cloud.firestore {
       return isMember(boardId) && roleIn(boardId) in ['owner', 'admin'];
     }
 
-    // media is optional: null, or {url, path, type, name, size} for a photo or video in Storage
-    function mediaOk(data) {
-      return !('media' in data) || data.media == null
-          || (data.media.type in ['image', 'video'] && data.media.path is string && data.media.url is string);
+    // image is optional: null, or a JPEG data URL. Keep the cap in sync with MAX_CHARS in js/media.js.
+    function imageOk(data) {
+      return !('image' in data) || data.image == null
+          || (data.image is string && data.image.size() <= 400000);
     }
 
     // Profiles. Any signed-in user can read them: that is how a board owner
@@ -67,13 +67,13 @@ service cloud.firestore {
         allow read: if isMember(boardId);
 
         allow create: if canWork(boardId)
-                      && mediaOk(request.resource.data)
+                      && imageOk(request.resource.data)
                       && request.resource.data.creatorId == request.auth.uid
                       && (request.resource.data.workerId == null
                           || request.resource.data.workerId in boardData(boardId).memberIds);
 
         allow update: if canWork(boardId)
-                      && mediaOk(request.resource.data)
+                      && imageOk(request.resource.data)
                       && request.resource.data.creatorId == resource.data.creatorId
                       && request.resource.data.createdAt == resource.data.createdAt
                       && (request.resource.data.workerId == null

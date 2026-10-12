@@ -2,7 +2,6 @@
 // Used while js/firebase-config.js is empty, or when the page is opened with ?demo.
 
 import { defaultCategories, newId } from './model.js';
-import { kindOf } from './media.js';
 
 export const isDemo = true;
 
@@ -139,7 +138,7 @@ export async function createTask(boardId, u, d) {
     (data.tasks[boardId] ||= []).push({
         id: newId(), title: d.title, content: d.content || '', categoryIds: d.categoryIds || [],
         creatorId: u.uid, creatorName: u.name, creatorPhoto: u.photoURL || '',
-        workerId: d.workerId || null, media: d.media || null, finished: false, createdAt: Date.now(), finishedAt: null,
+        workerId: d.workerId || null, image: d.image || null, finished: false, createdAt: Date.now(), finishedAt: null,
     });
     emit();
 }
@@ -153,24 +152,3 @@ export async function deleteTask(boardId, taskId) {
     data.tasks[boardId] = data.tasks[boardId].filter((x) => x.id !== taskId);
     emit();
 }
-
-// ---------- Media ----------
-// Demo keeps the file inside the task as a data: URL, so videos have to be small.
-
-const DEMO_VIDEO_MAX = 3 * 1024 * 1024;
-
-export function uploadMedia(boardId, file, onProgress) {
-    const type = kindOf(file);
-    if (type === 'video' && file.size > DEMO_VIDEO_MAX) {
-        return Promise.reject(new Error('Demo mode keeps files in this browser, so videos are limited to 3 MB here.'));
-    }
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onprogress = (e) => onProgress && e.lengthComputable && onProgress(Math.round((e.loaded / e.total) * 100));
-        reader.onerror = () => reject(reader.error);
-        reader.onload = () => resolve({ url: reader.result, path: `demo-${newId()}`, type, name: file.name, size: file.size });
-        reader.readAsDataURL(file);
-    });
-}
-
-export async function deleteMedia() { /* nothing to clean up: the file lives in the task */ }

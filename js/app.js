@@ -1,7 +1,7 @@
 import { h, icon, avatar, openModal, confirmDialog, toast, fmtDate, tint } from './ui.js';
 import { configured } from './firebase-config.js';
 import { ROLES, ROLE_LABEL, PALETTE, roleOf, can, newId } from './model.js';
-import { prepareMedia, kindOf, LIMITS } from './media.js';
+import { compressImage } from './media.js';
 
 const demo = new URLSearchParams(location.search).has('demo') || !configured;
 const api = await import(demo ? './backend-demo.js' : './backend-firebase.js');
@@ -261,7 +261,8 @@ function taskCard(ctx, task) {
             work && h('button', { class: 'btn-icon', title: 'Edit task', 'aria-label': 'Edit task', onclick: () => taskModal(ctx, task) }, icon('edit'))),
         cats.length > 0 && h('div', { class: 'cats' }, cats.map(pill)),
         task.content && h('p', { class: 'card-content' }, task.content),
-        task.media && mediaView(task.media, task.title),
+        task.image && h('button', { class: 'card-media-btn', type: 'button', 'aria-label': `View photo: ${task.title}`, onclick: () => photoModal(task) },
+            h('img', { class: 'card-media', src: task.image, alt: '', loading: 'lazy' })),
         h('dl', { class: 'card-meta' },
             h('div', null, h('dt', null, 'Creator'),
                 h('dd', null, avatar({ name: task.creatorName, photoURL: task.creatorPhoto }, 'xs'), task.creatorName, h('span', { class: 'sep' }, '·'), fmtDate(task.createdAt))),
@@ -270,25 +271,11 @@ function taskCard(ctx, task) {
         actions && h('div', { class: 'card-actions' }, actions));
 }
 
-// ---------- Task media (optional photo or video) ----------
+// ---------- Task photo (optional) ----------
 
-function mediaView(media, title) {
-    if (media.type === 'video') {
-        return h('video', { class: 'card-media', src: media.url, controls: true, preload: 'metadata', playsInline: true });
-    }
-    return h('button', { class: 'card-media-btn', type: 'button', 'aria-label': `View photo: ${title}`, onclick: () => photoModal(media, title) },
-        h('img', { class: 'card-media', src: media.url, alt: '', loading: 'lazy' }));
+function photoModal(task) {
+    openModal({ title: task.title, size: 'wide', content: h('img', { class: 'lightbox-img', src: task.image, alt: task.title }) });
 }
-
-function photoModal(media, title) {
-    openModal({ title, size: 'wide', content: h('img', { class: 'lightbox-img', src: media.url, alt: media.name || title }) });
-}
-
-const uploadError = (err) => (err.code === 'storage/unauthorized'
-    ? 'Upload not allowed. Check that storage.rules is published and that you can edit tasks on this board.'
-    : /storage\/(bucket-not-found|project-not-found|unknown)/.test(err.code || '')
-        ? 'Firebase Storage is not set up for this project yet (see the README).'
-        : err.message || 'Upload failed.');
 
 // ---------- Task: create / edit ----------
 
@@ -296,43 +283,31 @@ function taskModal(ctx, task) {
     const { board, user, cats } = ctx;
     const picked = new Set(task ? task.categoryIds : []);
 
-    // optional photo/video: `pendingFile` is a new pick, `removed` drops the task's existing file
-    let pendingFile = null;
-    let previewUrl = null;
-    let removed = false;
-    const fileInput = h('input', { type: 'file', accept: 'image/*,video/*', hidden: true });
-    const mediaBox = h('div', { class: 'media-pick' });
-    const clearPreview = () => { if (previewUrl) URL.revokeObjectURL(previewUrl); previewUrl = null; };
-    const drawMedia = () => {
-        const current = pendingFile ? { type: kindOf(pendingFile), url: previewUrl, name: pendingFile.name }
-            : !removed && task && task.media ? task.media : null;
-        mediaBox.replaceChildren(current
+    // optional photo: `image` is what the task will hold when saved (a data URL, or null for none)
+    let image = task && task.image ? task.image : null;
+    const fileInput = h('input', { type: 'file', accept: 'image/*', hidden: true });
+    const imageBox = h('div', { class: 'media-pick' });
+    const drawImage = () => {
+        imageBox.replaceChildren(image
             ? h('div', { class: 'media-chosen' },
-                current.type === 'video' ? h('video', { src: current.url, muted: true, preload: 'metadata' }) : h('img', { src: current.url, alt: '' }),
-                h('span', { class: 'media-name' }, current.name || (current.type === 'video' ? 'Video' : 'Photo')),
+                h('img', { src: image, alt: '' }),
+                h('span', { class: 'media-name' }, 'Photo attached'),
                 h('button', { class: 'btn btn-sm', type: 'button', onclick: () => fileInput.click() }, 'Replace'),
-                h('button', {
-                    class: 'btn btn-sm btn-danger', type: 'button',
-                    onclick: () => { pendingFile = null; clearPreview(); removed = Boolean(task && task.media); drawMedia(); },
-                }, icon('trash'), 'Remove'))
-            : h('button', { class: 'media-add', type: 'button', onclick: () => fileInput.click() }, icon('image'), 'Add a photo or video'));
+                h('button', { class: 'btn btn-sm btn-danger', type: 'button', onclick: () => { image = null; drawImage(); } }, icon('trash'), 'Remove'))
+            : h('button', { class: 'media-add', type: 'button', onclick: () => fileInput.click() }, icon('image'), 'Add a photo'));
     };
     fileInput.addEventListener('change', async () => {
         const file = fileInput.files[0];
         fileInput.value = '';
         if (!file) return;
         try {
-            const prepared = await prepareMedia(file);
-            clearPreview();
-            pendingFile = prepared;
-            previewUrl = URL.createObjectURL(prepared);
-            removed = false;
-            drawMedia();
+            image = await compressImage(file);
+            drawImage();
         } catch (err) {
             toast(err.message, 'error');
         }
     });
-    drawMedia();
+    drawImage();
 
     const title = h('input', { class: 'input', required: true, maxLength: 120, value: task ? task.title : '', placeholder: 'What needs doing?' });
     const content = h('textarea', { class: 'input', rows: 5, maxLength: 4000, value: task ? task.content : '', placeholder: 'Details, links, acceptance criteria…' });
@@ -355,53 +330,23 @@ function taskModal(ctx, task) {
         }))
         : h('p', { class: 'hint' }, ctx.manage ? 'No categories yet. Add some from the Categories button.' : 'No categories on this board.');
 
-    const submitLabel = task ? 'Save' : 'Add task';
-    const submitBtn = h('button', { class: 'btn btn-primary', type: 'submit' }, submitLabel);
-    const save = (data) => (task ? api.updateTask(board.id, task.id, data) : api.createTask(board.id, user, data));
-    // the old file is only deleted once the task no longer points at it
-    const dropOldMedia = () => {
-        if (task && task.media && (pendingFile || removed)) api.deleteMedia(task.media.path).catch(() => {});
-    };
-
     const modal = openModal({
         title: task ? 'Edit task' : 'New task',
-        onClose: clearPreview,
         content: h('form', {
-            onsubmit: async (e) => {
+            onsubmit: (e) => {
                 e.preventDefault();
-                const data = { title: title.value.trim(), content: content.value.trim(), categoryIds: [...picked], workerId: worker.value || null };
+                const data = { title: title.value.trim(), content: content.value.trim(), categoryIds: [...picked], workerId: worker.value || null, image };
                 if (!data.title) return;
-
-                if (!pendingFile) {
-                    if (removed) data.media = null;
-                    modal.close();
-                    run(save(data).then(dropOldMedia));
-                    return;
-                }
-
-                submitBtn.disabled = true;
-                let uploaded = null;
-                try {
-                    uploaded = await api.uploadMedia(board.id, pendingFile, (pct) => { submitBtn.textContent = `Uploading ${pct}%`; });
-                    data.media = uploaded;
-                    await save(data);
-                } catch (err) {
-                    console.error(err);
-                    if (uploaded) api.deleteMedia(uploaded.path).catch(() => {});
-                    toast(uploadError(err), 'error');
-                    submitBtn.disabled = false;
-                    submitBtn.textContent = submitLabel;
-                    return;
-                }
-                dropOldMedia();
                 modal.close();
+                if (task) run(api.updateTask(board.id, task.id, data));
+                else run(api.createTask(board.id, user, data));
             },
         },
         h('label', { class: 'field' }, h('span', null, 'Title'), title),
         h('label', { class: 'field' }, h('span', null, 'Content'), content),
         h('div', { class: 'field' }, h('span', null, 'Categories'), catPicker),
-        h('div', { class: 'field' }, h('span', null, 'Photo or video (optional)'), mediaBox, fileInput,
-            h('p', { class: 'hint' }, `Photos up to ${LIMITS.image / 1048576} MB (large ones are shrunk automatically), videos up to ${LIMITS.video / 1048576} MB.`)),
+        h('div', { class: 'field' }, h('span', null, 'Photo (optional)'), imageBox, fileInput,
+            h('p', { class: 'hint' }, 'Photos are shrunk automatically so they fit in the free database.')),
         h('label', { class: 'field' }, h('span', null, 'Worker'), worker),
         h('div', { class: 'modal-actions' },
             task && (ctx.manage || task.creatorId === user.uid) && h('button', {
@@ -409,14 +354,12 @@ function taskModal(ctx, task) {
                 onclick: async () => {
                     if (!await confirmDialog({ title: 'Delete task', message: `Delete "${task.title}"? This cannot be undone.`, confirmLabel: 'Delete', danger: true })) return;
                     modal.close();
-                    run(api.deleteTask(board.id, task.id).then(() => {
-                        if (task.media) api.deleteMedia(task.media.path).catch(() => {});
-                    }));
+                    run(api.deleteTask(board.id, task.id));
                 },
             }, icon('trash'), 'Delete'),
             h('span', { class: 'spacer' }),
             h('button', { class: 'btn', type: 'button', onclick: () => modal.close() }, 'Cancel'),
-            submitBtn)),
+            h('button', { class: 'btn btn-primary', type: 'submit' }, task ? 'Save' : 'Add task'))),
     });
 }
 

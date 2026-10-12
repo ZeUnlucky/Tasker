@@ -1,32 +1,35 @@
-// Optional photo/video on a task: validation and photo downscaling, shared by the app and both backends.
+// Optional photo on a task. It is stored as a JPEG data URL inside the task document, which keeps everything on
+// Firestore's free plan (Firebase Storage needs a paid plan). A Firestore document is capped at 1 MiB, so photos are
+// shrunk in the browser until they fit.
 
-export const LIMITS = { image: 10 * 1024 * 1024, video: 50 * 1024 * 1024 }; // keep in sync with storage.rules
-const MAX_SIDE = 1920;
+export const MAX_CHARS = 380000; // length of the data URL (about 280 KB of image). Keep in sync with firestore.rules.
 
-export const kindOf = (file) => (file.type.startsWith('image/') ? 'image' : file.type.startsWith('video/') ? 'video' : null);
+// [longest side in px, JPEG quality], tried in order until the result fits
+const STEPS = [[1280, 0.8], [1280, 0.65], [1024, 0.65], [800, 0.6], [640, 0.5]];
 
-// Returns the file to upload (a downscaled copy for big photos) or throws a user-readable error.
-export async function prepareMedia(file) {
-    const kind = kindOf(file);
-    if (!kind) throw new Error('Pick an image or a video file.');
-    let out = file;
-    if (kind === 'image' && /^image\/(jpeg|png|webp)$/.test(file.type)) out = await downscale(file).catch(() => file);
-    if (out.size > LIMITS[kind]) throw new Error(`That ${kind} is too large (max ${LIMITS[kind] / 1048576} MB).`);
-    return out;
-}
-
-async function downscale(file) {
-    const bitmap = await createImageBitmap(file);
-    const scale = Math.min(1, MAX_SIDE / Math.max(bitmap.width, bitmap.height));
-    if (scale === 1) {
-        bitmap.close();
-        return file;
+export async function compressImage(file) {
+    if (!file.type.startsWith('image/')) throw new Error('Pick an image file.');
+    let bitmap;
+    try {
+        bitmap = await createImageBitmap(file);
+    } catch {
+        throw new Error('That image could not be read. Try a JPEG or PNG.');
     }
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.round(bitmap.width * scale);
-    canvas.height = Math.round(bitmap.height * scale);
-    canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-    bitmap.close();
-    const blob = await new Promise((resolve) => canvas.toBlob(resolve, file.type, 0.85));
-    return blob && blob.size < file.size ? new File([blob], file.name, { type: blob.type }) : file;
+    try {
+        for (const [side, quality] of STEPS) {
+            const scale = Math.min(1, side / Math.max(bitmap.width, bitmap.height));
+            const canvas = document.createElement('canvas');
+            canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+            canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#fff'; // JPEG has no transparency
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+            const url = canvas.toDataURL('image/jpeg', quality);
+            if (url.length <= MAX_CHARS) return url;
+        }
+    } finally {
+        bitmap.close();
+    }
+    throw new Error('That image is too detailed to store. Try a smaller one.');
 }
